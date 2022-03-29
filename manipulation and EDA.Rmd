@@ -1,0 +1,117 @@
+---
+title: "Untitled"
+author: "Renjie Wei"
+date: '2022-03-19'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+# General figure set up
+knitr::opts_chunk$set(
+  # display the code in github doc
+  echo = TRUE,
+  # hide warning messages
+  warning = FALSE,
+  message = FALSE,
+  # set the figure to be 8 x 6, and the proportion it takes to be 90%
+  fig.width = 8,
+  fig.height = 6, 
+  out.width = "90%"
+)
+```
+
+```{r packages}
+setwd(dirname(rstudioapi::getSourceEditorContext()$path))
+library(gridExtra)
+library(ggplot2)
+library(corrplot)
+library(ResourceSelection)
+library(ISLR)
+library(pROC)
+library(tidyverse)
+library(summarytools)
+library(glmnet)
+library(caret)
+library(plotmo)
+library(gtsummary)
+library(readr)
+```
+
+```{r customized_summary_plots}
+# numerate case
+numCharts <- function(inputdf, dep) {
+par(mfcol= c(4,5))
+x=0
+for (i in inputdf){
+  x = 1 + x
+  chartname <- colnames(inputdf)[x]
+    plot <- plot(density(i[dep == 1]), col="red", main = chartname, cex.axis = 1.5, cex.main = 2, xlab = "")
+          lines(density(i[dep == 0]), col = "blue")
+          lines(density(i), col = "gray")
+          
+    plot <- hist(i, main=chartname, cex.axis = 1.5, cex.main = 2, xlab = "")
+    
+    plot <- plot(i[dep == 1], col="red", main = chartname, pch = 0,
+            cex.axis = 1.5, cex.main = 2, xlab = "")
+            points(i[dep == 0], col = "blue", pch = 3)
+            
+    plot <- boxplot(i~dep, main=chartname, cex.axis = 1.5, cex.main = 2, xlab = "")
+
+    }
+}
+
+#Print chart for selected variable
+plot_function <- function(yes, no, all, name) {
+    plot(density(yes), col="red", main = name, cex.axis = 1.5, cex.main = 2, xlim =
+             c(75,350), ylim=c(0,0.018), xlab = "", xpd=TRUE)
+    lines(density(no), col = "blue", xpd=TRUE)
+    lines(density(all), col = "gray", xpd=TRUE)
+    legend("topleft", 
+           legend = c(paste("Yes #",length(yes)), paste("No #",length(no)), paste("All #", length(all))), 
+           col=c("red", "blue", "gray"), 
+           text.col = c("red", "blue", "gray"), lwd = c(1,1,1), cex = 1.5, box.lty = 0)
+}
+
+#Function for chart size settings
+set_plot_dimensions <- function(width_choice, height_choice) {
+    options(repr.plot.width=width_choice, repr.plot.height=height_choice)
+}
+```
+
+
+```{r load_data}
+heart <- read_csv("heart.csv")
+# chek for NA's
+sum(is.na.data.frame(heart)) 
+# recoding characters
+heart$HeartDisease <- as.factor(heart$HeartDisease)
+heart$FastingBS <- as.factor(heart$FastingBS)
+heart.numeric <- heart[,c("Age", "RestingBP", "Cholesterol", "MaxHR", "Oldpeak")]
+heart.factor <- heart[,!names(heart) %in% colnames(heart.numeric)]
+heart.factor <- heart.factor[,!names(heart.factor) %in% "HeartDisease"]
+
+y <- heart$HeartDisease
+
+head(heart)
+dfSummary(heart)
+
+numCharts(heart.numeric, y)
+```
+
+Contingency Table
+
+```{r}
+heart %>%
+  tbl_summary(by = HeartDisease, missing_text = "Missing/NA") %>%
+  add_p(pvalue_fun = ~style_pvalue(.x, digits = 2)) %>%
+  add_overall() %>%
+  add_n() %>%
+  modify_header(label ~ "**Variable**") %>%
+  modify_spanning_header(c("stat_1", "stat_2") ~ "**Heart Disease**") %>%
+  modify_footnote(
+    all_stat_cols() ~ "Median (IQR) or Frequency (%)"
+  ) %>%
+  modify_caption("**Table 1. Summary of Dataset**") %>%
+  bold_labels()
+```
+

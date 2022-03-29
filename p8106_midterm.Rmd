@@ -1,0 +1,380 @@
+---
+title: "P8106 Midterm Project"
+author: "Shihui Zhu"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: 2
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_depth: '2'
+header-includes:
+- \usepackage{fancyhdr}
+- \usepackage{lipsum}
+- \pagestyle{fancy}
+- \fancyhead[R]{\thepage}
+- \fancypagestyle{plain}{\pagestyle{fancy}}
+--- 
+
+\newpage
+
+```{r setup, include=FALSE}
+library(gridExtra)
+library(ggplot2)
+library(corrplot)
+library(ResourceSelection)
+library(ISLR)
+library(pROC)
+library(summarytools)
+library(glmnet)
+library(caret)
+library(plotmo)
+library(gtsummary)
+library(readr)
+
+library(MASS)
+library(mlbench)
+
+library(pdp)
+library(vip)
+library(AppliedPredictiveModeling)
+
+library(rpart)
+library(rpart.plot)
+library(party)
+library(partykit)
+
+library(tidyverse)
+# General figure set up
+knitr::opts_chunk$set(
+  # display the code in github doc
+  # hide warning messages
+  warning = FALSE,
+  message = FALSE,
+  echo = FALSE
+)
+```
+
+## I. Introduction
+
+### Motivation
+
+Hepatitis C is a liver infectious disease caused by the hepatitis C virus (HCV) which is spread through inter-personal blood contact. The traditional approach of its diagnostic pathways are based on expert rules ("if...then...else") (Hoffmann), and the structure of which can be viewed as a decision tree. However, the diagnosis of HCV can be generally viewed as a classification problem and can be approached by multiple machine learning algorithms. Therefore, applying machine learning algorithms may help scientist to find potential new and automated diagnostic pathways. Since HCV is an infectious disease, an earlier diagnosis and treatment can help reduce its spread and induce better treatment outcome. In this project, multiple machine learning algorithms including regressions, discrimination, and tree methods are applied to the HCV dataset in order to determine which is the most efficient and accurate model for HCV diagnosis. 
+
+### Research Question:
+
+Which model is the best in diagnosing HCV disease (in an early stage) based on laboratory results?
+
+### Data Description
+
+The dataset is an online dataset obtained from the *UCI Machine Learning Repository*, donated by Ralf Lichtinghagen, etc. al. It recorded the laboratory information from 615 blood donors and patients with HCV. The morphological pictures of the HCV patients ranged from chronic hepatitis C infection without fibrosis to end stage liver cirrhosis with a need for liver transplantation (LTX) (Hoffmann). There are total of 13 attributes in this dataset, including 12 continous and binary predictors, and one nominal outcome. The details of the variables are listed below:
+
+* **Index**: Patient ID/No.
+* **Category**: The categorical response variable, diagnosis ('0=Blood Donor', '0s=suspect Blood Donor', '1=Hepatitis', '2=Fibrosis', '3=Cirrhosis') 
+* **Age**: numerical, in years
+* **Sex**: categorical(binary), sex (F = female, M = male)
+* The other 10 numerical variables are biochemicals used for liver disease tests, albumin, bilirubin, choline esterase etc. al., abbreviated as **ALB**, **ALP**, **ALT**, **AST**, **BIL**, **CHE**, **CHOL**, **CREA**, **GGT**, and **PROT**. 
+
+### Data Cleaning
+ 
+The data is already prepared in .csv format. However, the dataset has 31 missing values and are considered to be missing-at-random (MAR). Due to the concern of the data size, we applied the bagging imputation to the original dataset to accommodate those missing values. Since our purpose is to predict early HCV diagnosis result, we recoded the nominal response variable (**Category**) in to a response variable of HCV patient(**Patient**) and non-HCV blood donors (**Donor**). The $tidyverse$ package is used for data cleaning this step. 
+
+For training and testing purpose, the original data was randomly divded into two subsets: training set (75%) and the testing set (25%). The exact same training and testing set was used for the training of all models to ensure the reproducibility of the process.  
+
+```{r load_data}
+hcv <- read_csv("hcvdat0.csv") %>% select(-1)
+# chek for NA's
+missing <- sum(is.na.data.frame(hcv))
+set.seed(2022)
+hcv.pre <- preProcess(hcv[, !names(hcv) %in% "Category"], method = "bagImpute")
+hcv.bagged <- hcv
+hcv.bagged[, !names(hcv) %in% "Category"]  <- predict(hcv.pre, hcv.bagged[, !names(hcv) %in% "Category"])
+```
+
+
+```{r}
+# recoding characters
+hcv.bagged$Category <- case_when(hcv.bagged$Category == '0=Blood Donor' ~ "Donor",
+                          hcv.bagged$Category == '0s=suspect Blood Donor' ~ "Donor",
+                          TRUE ~ "Patient")
+hcv.bagged$Category <- as.factor(hcv.bagged$Category)
+# Binary variable
+hcv.bagged$Sex <- toupper(hcv.bagged$Sex)
+hcv.bagged$Sex <- as.factor(hcv.bagged$Sex)
+# numeric variable
+hcv.factor <- hcv.bagged[,c("Sex")]
+hcv.numeric <- hcv.bagged[,!names(hcv.bagged) %in% c("Sex", "Category")]
+ 
+y <- hcv.bagged$Category
+```
+
+## II. Exploratory analysis/visualization
+
+We applied both visualization and numerical analysis to get an overview of the preprocessed data. 
+
+```{r numerical}
+hcv.bagged %>%
+  tbl_summary(by = Category, missing_text = "Missing/NA") %>%
+  add_overall() %>%
+  add_p() %>%
+  modify_header(label ~ "**Variable**") %>%
+  modify_spanning_header(c("stat_1", "stat_2") ~ "**Category**") %>%
+  modify_footnote(
+    all_stat_cols() ~ "Median (IQR) or Frequency (%)"
+  ) %>%
+  modify_caption("**Table 1. Summary of Dataset**") %>%
+  bold_labels()
+```
+
+The mean and 95% CI intervals were listed for each continuous predictors, and the percentage distribution was listed for categorical variable. There are much more non-HCV donor than patient in this dataset (540 v.s. 75), so our dataset contains more negative cases than positive cases. Among patients, males are more than two times of females. 
+
+Statistical evidence is showed by the Wilcoxon rand sum test (for continous) and the Pearson's Chi-squared test (for categorical) since the following feature plots indicated that many of the continuous variables do not have a normal distribution. The p-value indicates that the distributions of continuous variables ALB, ALP, AST, BIL, CHE, CHOL, and GGT show greatest statistically important difference between the non-HCV blood donors and the HCV patients. This can be used as a reference for accessing the importance of predictors in our following analysis. 
+
+Then we looked at the distributions of each predictors, and accessed whether their distributions are differed by the response variable graphically. The following feature plots were generated for the all continuous vairables, **Age**, **ALB**, **ALP**, **ALT**, **AST**, **BIL**, **CHE**, **CHOL**, **CREA**, **GGT**, and **PROT**. 
+
+```{r eds_functions, echo=FALSE}
+theme1 <- transparentTheme(trans = .4)
+trellis.par.set(theme1)
+featurePlot(x = hcv.bagged[, names(hcv.numeric)],
+            y = hcv.bagged$Category,
+            scales = list(x = list(relation = "free"),
+                          y = list(relation = "free")),
+            plot = "density",
+            pch = "|",
+            auto.key = list(columns = 2),
+            labels = c("Figure 1. Density Plots", "Measure"))
+```
+
+The figure echoed with our summary table above. As mentioned before, some of the numerical variables do not follow a normal distribution. For instance, the distribution of **Age** and **CHE** has two peaks. Also, the distributions of **CHOL** and **AST** showed the greatest difference between two categories, but other variables seem to have distributions that are similar between the two diagnosis groups. To summary, the dataset has shown some statistically important difference between the non-HCV blood donors and the HCV patients, but most of the differences is not visibly detectable among the predictors. 
+
+## III. Models
+
+### Predictors
+
+There are only 12 predictors so we used them all in model training. They are:
+
+* **Age**: numerical, in years
+* **Sex**: categorical(binary), sex (F = female, M = male)
+* 10 numerical variables from laboratory results, **ALB**, **ALP**, **ALT**, **AST**, **BIL**, **CHE**, **CHOL**, **CREA**, **GGT**, and **PROT**. 
+
+### Techniques
+
+Since the traditional approach in HCV diagnostic pathways is related to decision tree, two tree methods were used: the conditional inference trees (CTREE) and regression tree (RPART). The tree methods can be displayed graphically and more easily understood by physicians. Taking the diagonsis as a classification problem, other machine learning models were also trained for the purpose our project. We used the generalized additive model model (GAM), the generalized linear regression models, GLMNET (with penalization) and GLM (without penalization), linear and quadratic discriminant analysis models (LDA, QDA), as well as naive bayes (NB). All the models were trained using the package $caret$. The regression models (GLM, LDA, etc. al.) can accept mixture of variables which is suitable for our case. NB is useful when predictor number is large. GAM model can include any quadratically penalized GLM and a variety of other models, which induces great flexibility. Linear regression model also assumed the independence of the predictors. 
+
+We used 10-folds cross-validation for all model training. We didn't apply repeated cross-validation due to constrain of the computation resource. 
+
+### Tuning parameters
+
+#### GLMNET Model
+
+The tuning parameters is tested within the train function of the `caret` package. We tested on different ranges of regularization parameter $\lambda$ and $\alpha$. We looked for the point where the best cross-validated ROC AUC is obtained. The result is alpha = 0.85, and lambda = 0.044.
+
+#### MARS Model
+
+MARS model can take a wide degree of features and number of terms. For simplicity, we only consider the performance of MARS in the first four degrees and all terms. The best tuned parameter is degree = 3 and nprune = 6.
+
+#### NB and Tree models
+
+NB is trained by the Laplace correction parameter and the kernel density estimates. The CTREE is trained by minicriterion and RPART is trained by the complexity parameter (cp). The results are: Laplace correction(FL) = 1, adjust = 1.4 for NB model, minicriterion = 0.8199077 for CTREE model, and cp = 0.01947204 for the RPART model. 
+
+```{r train_test}
+# train and test split
+set.seed(1)
+rowTrain <- createDataPartition(y = hcv.bagged$Category,
+                                p = 0.75,
+                                list = FALSE)
+hcv.bagged <- as.data.frame(hcv.bagged)
+trainData <- hcv.bagged[rowTrain,]
+testData <- hcv.bagged[-rowTrain,]
+
+# Using caret, 10 fold CV
+ctrl <- trainControl(method = "cv",
+                     summaryFunction = twoClassSummary,
+                     classProbs = TRUE)
+```
+
+```{r glmnet}
+glmnGrid <- expand.grid(.alpha = seq(0, 1, length = 21),
+                        .lambda = exp(seq(-5, -1, length = 50)))
+# Convert Sex to dummy variable
+trainData.dummy <- model.matrix(Category~., trainData)[,-1]
+set.seed(2022)
+model.glmn <- train(x = trainData.dummy,
+                    y = trainData$Category,
+                    method = "glmnet",
+                    tuneGrid = glmnGrid,
+                    metric = "ROC",
+                    trControl = ctrl)
+
+#model.glmn$bestTune
+
+myCol<- rainbow(25)
+myPar <- list(superpose.symbol = list(col = myCol),
+              superpose.line = list(col = myCol))
+
+#plot(model.glmn, par.settings = myPar, xTrans = function(x) log(x))
+```
+
+```{r glm}
+set.seed(2022)
+model.glm <- train(x = trainData.dummy,
+                   y = trainData$Category,
+                   method = "glm",
+                   metric = "ROC",
+                   trControl = ctrl)
+```
+
+```{r gam}
+set.seed(2022)
+model.gam <- train(x = trainData.dummy,
+                   y = trainData$Category,
+                   method = "gam",
+                   metric = "ROC",
+                   trControl = ctrl)
+```
+
+```{r mars}
+set.seed(2022)
+#Train using CV
+model.mars <- train(x = trainData.dummy,
+                   y = trainData$Category,
+                    method = "earth",
+                    tuneGrid = expand.grid(degree = 1:4, 
+                                           nprune = 2:20),
+                    metric = "ROC",
+                    trControl = ctrl)
+```
+
+```{r}
+nbGrid <- expand.grid(usekernel = c(FALSE,TRUE),
+                      fL = 1, 
+                      adjust = seq(.2, 3, by = .2))
+
+set.seed(2022)
+model.nb <- train(x = trainData.dummy,
+                   y = trainData$Category,
+                  method = "nb",
+                  tuneGrid = nbGrid,
+                  metric = "ROC",
+                  trControl = ctrl)
+```
+
+```{r lda}
+set.seed(2022)
+model.lda <- train(x = trainData.dummy,
+                   y = trainData$Category,
+                   method = "lda",
+                   metric = "ROC",
+                   trControl = ctrl)
+```
+
+```{r qda}
+set.seed(2022)
+model.qda <- train(x = trainData.dummy,
+                   y = trainData$Category,
+                   method = "qda",
+                   metric = "ROC",
+                   trControl = ctrl)
+```
+
+```{r rpart}
+set.seed(2022)
+model.rpart <- train(x = trainData.dummy,
+                   y = trainData$Category,
+                   method = "rpart",
+                   tuneGrid = data.frame(cp = exp(seq(-5,-1, len = 50))),
+                   trControl = ctrl,
+                   metric = "ROC")
+```
+
+```{r ctree}
+set.seed(2022)
+model.ctree <- train(x = trainData.dummy,
+                   y = trainData$Category,
+                   method = "ctree",
+                   tuneGrid = data.frame(mincriterion = 1-exp(seq(-2, -1, length = 50))),
+                   metric = "ROC",
+                   trControl = ctrl)
+```
+
+## IV. Conclusions
+
+### Final Model
+
+We address the performance of each models by the 10-folds cross-Validation ROC AUC scores based on the training set. 
+
+```{r roc}
+res <- resamples(list(GLMN = model.glmn,
+                      GLM = model.glm,
+                      MARS = model.mars,
+                      LDA = model.lda,
+                      GAM = model.gam,
+                      NB = model.nb,
+                      QDA = model.qda,
+                      CTREE = model.ctree,
+                      RPART = model.rpart))
+
+bwplot(res, metric = "ROC")
+```
+
+As shown by the figure above, all of the models perform generally well. The best model is the MARS model. It worthed notice that the tree methods were not outstanding comparing with the other models. 
+
+The coeffients and variables used by the MARS model is provided below:
+
+```{r}
+coef(model.mars$finalModel) 
+```
+
+The important variables are shown below:
+
+```{r mars_importance}
+vip(model.mars$finalModel)
+```
+
+From the figure above, we see that the variables **AST**, **ALT**, **CHE**, **ALP**, and **ALB** are the five most important features used in MARS. This also echoed with our hypothesis test at the beginning. The age and sex were not important and therefore not used at all in the model.
+
+The following plots indicated the performance of models on testing set:
+
+```{r roc_graph}
+models <- list(model.glmn, model.glm, model.mars, model.gam, model.lda, model.nb, model.qda, model.ctree, model.rpart)
+model_names <- c("GLMNET", "GLM", "MARS", "GAM","LDA", "NB", "QDA", "CTREE", "RPART")
+testData.dummy <- model.matrix(Category~., testData)[,-1]
+
+roc_plot <- function(model_list){
+  x = 0
+  auc <- c()
+  for (i in model_list){
+    x = x + 1
+    model.pred <- predict(i, newdata = testData.dummy, type = "prob")[,2]
+    roc.model <- roc(testData$Category, model.pred)
+    if(x == 1){
+      plot(roc.model, legacy.axes = TRUE)
+    } else {
+      plot(roc.model, col = x, add = TRUE)
+    }
+    auc <- c(auc, roc.model$auc[1])
+  }
+  legend("bottomright", legend = paste0(model_names, ": ", round(auc,3)),
+       col = 1:9, lwd = 2)
+}
+
+roc_plot(models)
+```
+
+Not surprisingly, the MARS model has the best performance in prediction, and has a ROC AUC score as high as 0.98. 
+
+Therefore, we selected the MARS model to be our final model, and concluded it is the best in diagnosing HCV disease (in an early stage) based on laboratory results.
+
+### Limitation
+
+* Our dataset is very unbalanced. The rare disease outcome made our model underestimate the potential effect of some predictors. 
+
+* Missing data: we assume data are missing-at-random but we never know whether this is the true scenario
+
+* Model limitations: in terms of interpretability, MARS, GAM etc., al. are very limited comparing with tree-based method. They might appear to be confusing for physicians and hard to make sense biologically.
+
+## Citation
+
+1. Georg Hoffmann, etc. al. "Using machine learning techniques to generate laboratory diagnostic pathways—a case study", *Journal of Laboratory and Precision Medicine.* https://jlpm.amegroups.com/article/view/4401/5424.
+
